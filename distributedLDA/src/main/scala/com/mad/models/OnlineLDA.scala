@@ -1,6 +1,6 @@
 package com.mad.models
 
-import breeze.linalg.DenseMatrix
+import breeze.linalg.{DenseMatrix, DenseVector => BDV}
 
 trait OnlineLDA {
 
@@ -12,7 +12,7 @@ trait OnlineLDA {
 
   type Gamma = DenseMatrix[Double]
 
-  def eStep(mb: BowMinibatch, lambda: Lambda, gamma: Gamma): MinibatchSStats
+  def eStep(mb: BowMinibatch, model: LdaModel, lambdaSum: BDV[Double], gamma: Gamma): MinibatchSStats
 
   def mStep(model: LdaModel, mbSStats: MinibatchSStats): LdaModel
 

@@ -3,8 +3,8 @@ package com.mad.models
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 
 case class OnlineLDAParams(
-  vocabSize: Int,
-  alpha: Vector = Vectors.dense(0),
+  vocabSize: Int = 171769,
+  alpha: Vector = Vectors.dense(-1),
   eta: Double,
   decay: Double,
   learningRate: Double,
@@ -12,7 +12,7 @@ case class OnlineLDAParams(
   maxInnerIter: Int,
   convergenceThreshold: Double,
   numTopics: Int,
-  totalDocs: Int,
+  totalDocs: Long,
   miniBatchFraction: Double,
   optimizeDocConcentration: Boolean = true,
   perplexity: Boolean = false

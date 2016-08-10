@@ -14,6 +14,14 @@ import org.apache.hadoop.fs.Path
 
 object Utils {
 
+    /**
+   * Log Sum Exp with overflow protection using the identity:
+   * For any a: \log \sum_{n=1}^N \exp\{x_n\} = a + \log \sum_{n=1}^N \exp\{x_n - a\}
+   */
+  def logSumExp(x: DenseMatrix[Double]): Double = {
+    val a = max(x)
+    a + log(sum(exp(x :- a)))
+  }
   /**
    * 
    */
@@ -65,16 +73,22 @@ object Utils {
     }
   }
 
-  def dirichletExpectation(hParam: DenseMatrix[Double]): DenseMatrix[Double] =
-    hParam match {
+  def dirichletExpectation(srcMatrix: DenseMatrix[Double], sumVector: DenseVector[Double]=null): DenseMatrix[Double] =
+    srcMatrix match {
 
       case x if (x.rows == 1 || x.cols == 1) =>
-        digamma(hParam) - digamma(sum(hParam))
+        if(sumVector == null)
+          digamma(srcMatrix) - digamma(sum(srcMatrix))
+        else
+          digamma(srcMatrix) - digamma(sumVector.toDenseMatrix)
 
       case _ =>
 
-        val first_term = digamma(hParam)
-        first_term(::, *) - digamma(sum(hParam, Axis._1))
+        val first_term = digamma(srcMatrix)
+        if(sumVector == null)
+          first_term(::, *) - digamma(sum(srcMatrix, Axis._0)).toDenseVector
+        else
+          first_term(::, *) - digamma(sumVector)
     }
 
   def getUniqueWords(documents: Seq[Document]): Map[Double, Int] = {
