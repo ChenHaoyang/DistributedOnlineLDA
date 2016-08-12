@@ -1,6 +1,6 @@
 package com.mad.models
 
-import breeze.linalg.{DenseMatrix, DenseVector => BDV}
+import breeze.linalg.{ DenseMatrix, DenseVector => BDV }
 
 trait OnlineLDA {
 

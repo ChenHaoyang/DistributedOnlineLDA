@@ -4,7 +4,7 @@
 		module="distributedlda_2.10"
 		revision="1.0.0"
 		status="integration"
-		publication="20160805170641"
+		publication="20160810165101"
 	>
 		<description>
 		distributedLDA
@@ -34,14 +34,14 @@
 	<dependencies>
 		<dependency org="org.scala-lang" name="scala-compiler" rev="2.10.6" conf="scala-tool->default,optional(default)"/>
 		<dependency org="org.scala-lang" name="scala-library" rev="2.10.6" conf="scala-tool->default,optional(default);compile->default(compile)"/>
-		<dependency org="org.apache.spark" name="spark-core_2.10" rev="1.3.0" conf="compile->default(compile)">
+		<dependency org="org.apache.spark" name="spark-core_2.10" rev="1.3.0" conf="provided->default(compile)">
 			<exclude org="org.mortbay.jetty" module="servlet-api" name="*" type="*" ext="*" conf="" matcher="exact"/>
 			<exclude org="commons-beanutils" module="commons-beanutils-core" name="*" type="*" ext="*" conf="" matcher="exact"/>
 			<exclude org="commons-collections" module="commons-collections" name="*" type="*" ext="*" conf="" matcher="exact"/>
 			<exclude org="commons-logging" module="commons-logging" name="*" type="*" ext="*" conf="" matcher="exact"/>
 			<exclude org="com.esotericsoftware.minlog" module="minlog" name="*" type="*" ext="*" conf="" matcher="exact"/>
 		</dependency>
-		<dependency org="org.apache.spark" name="spark-mllib_2.10" rev="1.3.0" conf="compile->default(compile)"/>
+		<dependency org="org.apache.spark" name="spark-mllib_2.10" rev="1.3.0" conf="provided->default(compile)"/>
 		<dependency org="org.scalatest" name="scalatest_2.10" rev="2.2.4" conf="test->default(compile)"/>
 		<dependency org="org.apache.hbase" name="hbase-spark" rev="2.0.0-SNAPSHOT" conf="compile->default(compile)"/>
 		<dependency org="org.apache.hbase" name="hbase-common" rev="2.0.0-SNAPSHOT" conf="compile->default(compile)"/>

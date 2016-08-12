@@ -9,12 +9,12 @@ import org.apache.spark.mllib.linalg.distributed.{ IndexedRowMatrix, IndexedRow 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.SparkContext
 import org.apache.hadoop.hbase.spark.HBaseContext
-import org.apache.hadoop.hbase.{HBaseConfiguration}
+import org.apache.hadoop.hbase.{ HBaseConfiguration }
 import org.apache.hadoop.fs.Path
 
 object Utils {
 
-    /**
+  /**
    * Log Sum Exp with overflow protection using the identity:
    * For any a: \log \sum_{n=1}^N \exp\{x_n\} = a + \log \sum_{n=1}^N \exp\{x_n - a\}
    */
@@ -23,13 +23,13 @@ object Utils {
     a + log(sum(exp(x :- a)))
   }
   /**
-   * 
+   *
    */
   def getHBaseContext(implicit sc: SparkContext): HBaseContext = {
     val hbaseConf = HBaseConfiguration.create()
     hbaseConf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/core-site.xml"))
     hbaseConf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/hbase-site.xml"))
-    
+
     new HBaseContext(sc, hbaseConf)
   }
 
@@ -73,11 +73,11 @@ object Utils {
     }
   }
 
-  def dirichletExpectation(srcMatrix: DenseMatrix[Double], sumVector: DenseVector[Double]=null): DenseMatrix[Double] =
+  def dirichletExpectation(srcMatrix: DenseMatrix[Double], sumVector: DenseVector[Double] = null): DenseMatrix[Double] =
     srcMatrix match {
 
       case x if (x.rows == 1 || x.cols == 1) =>
-        if(sumVector == null)
+        if (sumVector == null)
           digamma(srcMatrix) - digamma(sum(srcMatrix))
         else
           digamma(srcMatrix) - digamma(sumVector.toDenseMatrix)
@@ -85,10 +85,10 @@ object Utils {
       case _ =>
 
         val first_term = digamma(srcMatrix)
-        if(sumVector == null)
-          first_term(::, *) - digamma(sum(srcMatrix, Axis._0)).toDenseVector
+        if (sumVector == null)
+          first_term(*, ::) - digamma(sum(srcMatrix, Axis._0)).toDenseVector
         else
-          first_term(::, *) - digamma(sumVector)
+          first_term(*, ::) - digamma(sumVector)
     }
 
   def getUniqueWords(documents: Seq[Document]): Map[Double, Int] = {
