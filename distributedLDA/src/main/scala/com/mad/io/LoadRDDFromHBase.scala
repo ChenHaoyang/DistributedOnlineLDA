@@ -3,7 +3,7 @@ package com.mad.io
 import com.mad.models.Document
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
-import org.apache.spark.storage.{StorageLevel}
+import org.apache.spark.storage.{ StorageLevel }
 import com.mad.util._
 import org.apache.hadoop.hbase.client.{ Scan, Result }
 import org.apache.hadoop.hbase.util.Bytes
@@ -36,7 +36,7 @@ class LoadRDDFromHBase(
           Document(id, cnt)
         })
         .persist(StorageLevel.MEMORY_AND_DISK)
-      
+
       rdd
     }
   }

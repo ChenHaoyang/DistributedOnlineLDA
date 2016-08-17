@@ -22,7 +22,7 @@ libraryDependencies ++= Seq(
   "org.scalatest" %% "scalatest" % "2.2.4" % Test,
   "org.apache.hbase" % "hbase-spark" % "2.0.0-SNAPSHOT",
   "org.apache.hbase" % "hbase-common" % "2.0.0-SNAPSHOT",
-  "org.apache.hbase" % "hbase-server" % "2.0.0-SNAPSHOT",
+  "org.apache.hbase" % "hbase-server" % "2.0.0-SNAPSHOT" excludeAll ExclusionRule(organization = "org.mortbay.jetty"),
   "org.apache.hbase" % "hbase-hadoop-compat" % "1.2.2",
   "org.apache.hbase" % "hbase-hadoop2-compat" % "1.2.2"
 )

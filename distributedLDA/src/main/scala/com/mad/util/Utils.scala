@@ -2,7 +2,7 @@ package com.mad.util
 
 import breeze.linalg._
 import breeze.numerics._
-import com.mad.models.Document
+import com.mad.models.{ Document, ModelSStats }
 import org.apache.spark.mllib.linalg
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.linalg.distributed.{ IndexedRowMatrix, IndexedRow }
@@ -11,17 +11,12 @@ import org.apache.spark.SparkContext
 import org.apache.hadoop.hbase.spark.HBaseContext
 import org.apache.hadoop.hbase.{ HBaseConfiguration }
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{ FileSystem, Path }
+import org.apache.hadoop.conf.Configuration
 
 object Utils {
 
-  /**
-   * Log Sum Exp with overflow protection using the identity:
-   * For any a: \log \sum_{n=1}^N \exp\{x_n\} = a + \log \sum_{n=1}^N \exp\{x_n - a\}
-   */
-  def logSumExp(x: DenseMatrix[Double]): Double = {
-    val a = max(x)
-    a + log(sum(exp(x :- a)))
-  }
+  val checkPointPath = "hdfs://devel-eng01.microad.jp:8020/user/spark/checkpoint"
   /**
    *
    */
@@ -123,6 +118,37 @@ object Utils {
   def logSumExp(x: DenseVector[Double]): Double = {
     val a = max(x)
     a + log(sum(exp(x :- a)))
+  }
+
+  def clearCheckPoint(numUpdates: Int, base: Int) {
+    val conf = new Configuration()
+    //conf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/core-site.xml"))
+    //conf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/hdfs-site.xml"))
+
+    System.setProperty("HADOOP_USER_NAME", "hdfs")
+    val fs = FileSystem.get(conf)
+    var passFirstFolder = false
+
+    val status = fs.listStatus(new Path(checkPointPath))
+
+    status.foreach { x =>
+      {
+        if (x.isDirectory()) {
+          val folder = fs.listStatus(x.getPath)
+          folder.foreach { f =>
+            {
+              val files = fs.listFiles(f.getPath, true)
+              while (files.hasNext())
+                fs.delete(files.next.getPath, false)
+              fs.delete(f.getPath, true)
+            }
+          }
+          if (numUpdates == base)
+            fs.delete(x.getPath, true)
+        }
+      }
+    }
+    fs.close()
   }
 
 }

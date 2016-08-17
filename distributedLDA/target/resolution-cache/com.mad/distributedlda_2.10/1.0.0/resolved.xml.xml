@@ -4,7 +4,7 @@
 		module="distributedlda_2.10"
 		revision="1.0.0"
 		status="integration"
-		publication="20160810165101"
+		publication="20160816210743"
 	>
 		<description>
 		distributedLDA
@@ -45,7 +45,9 @@
 		<dependency org="org.scalatest" name="scalatest_2.10" rev="2.2.4" conf="test->default(compile)"/>
 		<dependency org="org.apache.hbase" name="hbase-spark" rev="2.0.0-SNAPSHOT" conf="compile->default(compile)"/>
 		<dependency org="org.apache.hbase" name="hbase-common" rev="2.0.0-SNAPSHOT" conf="compile->default(compile)"/>
-		<dependency org="org.apache.hbase" name="hbase-server" rev="2.0.0-SNAPSHOT" conf="compile->default(compile)"/>
+		<dependency org="org.apache.hbase" name="hbase-server" rev="2.0.0-SNAPSHOT" conf="compile->default(compile)">
+			<exclude org="org.mortbay.jetty" module="*" name="*" type="*" ext="*" conf="" matcher="exact"/>
+		</dependency>
 		<dependency org="org.apache.hbase" name="hbase-hadoop-compat" rev="1.2.2" conf="compile->default(compile)"/>
 		<dependency org="org.apache.hbase" name="hbase-hadoop2-compat" rev="1.2.2" conf="compile->default(compile)"/>
 	</dependencies>
