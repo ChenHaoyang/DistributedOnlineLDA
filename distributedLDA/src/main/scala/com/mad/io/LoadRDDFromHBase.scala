@@ -17,12 +17,12 @@ class LoadRDDFromHBase(
     tableName: String,
     familyName: String,
     colName: String
-)(implicit sc: SparkContext) {
+)(implicit sc: SparkContext) extends LoadRDD {
 
   /**
    *
    */
-  def load(): Try[RDD[Document]] = {
+  override def load(): Try[RDD[Document]] = {
     Try {
       val hbaseContext = Utils.getHBaseContext(sc)
       val scan = new Scan()
@@ -35,7 +35,11 @@ class LoadRDDFromHBase(
           val cnt = doc(1).split(":").map { x => x.toLong }
           Document(id, cnt)
         })
-        .persist(StorageLevel.MEMORY_AND_DISK)
+      rdd.setName("corpus")
+      rdd.persist(StorageLevel.MEMORY_AND_DISK)
+
+      //Utils.cleanCheckPoint(true)
+      //rdd.checkpoint()
 
       rdd
     }

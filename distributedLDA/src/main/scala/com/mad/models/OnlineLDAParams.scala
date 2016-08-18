@@ -8,7 +8,7 @@ case class OnlineLDAParams(
   eta: Double,
   decay: Double = 1024d,
   learningRate: Double = 0.7,
-  maxOutterIter: Int = 50000,
+  maxOutterIter: Int = 100000,
   maxInnerIter: Int = 100,
   convergenceThreshold: Double = 0.001,
   numTopics: Int = 3000,

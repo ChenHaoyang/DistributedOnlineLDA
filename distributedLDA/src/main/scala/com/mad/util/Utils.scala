@@ -120,7 +120,7 @@ object Utils {
     a + log(sum(exp(x :- a)))
   }
 
-  def clearCheckPoint(numUpdates: Int, base: Int) {
+  def cleanCheckPoint(cleanRoot: Boolean) {
     val conf = new Configuration()
     //conf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/core-site.xml"))
     //conf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/hdfs-site.xml"))
@@ -143,7 +143,7 @@ object Utils {
               fs.delete(f.getPath, true)
             }
           }
-          if (numUpdates == base)
+          if (cleanRoot)
             fs.delete(x.getPath, true)
         }
       }

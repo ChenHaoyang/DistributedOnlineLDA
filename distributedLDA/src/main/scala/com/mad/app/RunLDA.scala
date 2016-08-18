@@ -3,6 +3,7 @@ package com.mad.app
 import org.apache.spark.{ SparkConf, SparkContext }
 import com.mad.models._
 import com.mad.io._
+import com.mad.util._
 
 import java.io.File
 
@@ -15,16 +16,20 @@ object RunLDA {
     val partitions = args(4).toInt
     val learningRate = args(5).toDouble
     val checkPoint = args(6).toInt
+    val iteration = args(7).toInt
 
     implicit val sc = new SparkContext(
       new SparkConf().setAppName("DistributedLDA")
     )
+    //チェックポイントのパスを設定
+    sc.setCheckpointDir(Utils.checkPointPath)
 
     val lda = new DistributedOnlineLDA(
       OnlineLDAParams(
         vocabSize = totalVcab,
         eta = 1.0 / totalVcab.toDouble,
         learningRate = learningRate,
+        maxOutterIter = iteration,
         totalDocs = totalDocs,
         miniBatchFraction = miniBatch.toDouble / totalDocs.toDouble,
         partitions = partitions,
@@ -36,7 +41,7 @@ object RunLDA {
       "url_info",
       "corpus",
       "doc"
-    ).load().get)
+    ))
 
     lda.saveModel(model, new File("/home/charles/Data/output/lda"))
 
