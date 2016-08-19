@@ -14,8 +14,8 @@ trait OnlineLDA {
 
   type Gamma = BDM[Double]
 
-  def eStep(mb: BowMinibatch, model: LdaModel, alphabd: Broadcast[BDM[Double]], lambdaSumbd: Broadcast[BDV[Double]], gammabd: Broadcast[BDM[Double]]): MinibatchSStats
+  def eStep(mb: BowMinibatch, model: LdaModel): MinibatchSStats
 
-  def mStep(model: LdaModel, topicUpdates: Broadcast[TopicUpdatesMap], gammaMT: BDM[Double], mbSize: Int): (LdaModel, BDV[Double])
+  def mStep(model: LdaModel, gammaMT: BDM[Double]): (LdaModel, BDV[Double])
 
 }
