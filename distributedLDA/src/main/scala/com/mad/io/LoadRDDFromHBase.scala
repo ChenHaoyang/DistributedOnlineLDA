@@ -17,12 +17,12 @@ class LoadRDDFromHBase(
     tableName: String,
     familyName: String,
     colName: String
-)(implicit sc: SparkContext) extends LoadRDD {
+) extends LoadRDD {
 
   /**
    *
    */
-  override def load(): Try[RDD[Document]] = {
+  override def load(implicit sc: SparkContext): Try[RDD[Document]] = {
     Try {
       val hbaseContext = Utils.getHBaseContext(sc)
       val scan = new Scan()
