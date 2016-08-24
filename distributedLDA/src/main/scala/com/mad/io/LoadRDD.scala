@@ -6,5 +6,5 @@ import com.mad.models.Document
 import org.apache.spark.SparkContext
 
 trait LoadRDD {
-  def load(implicit sc: SparkContext): Try[RDD[Document]]
+  def load(implicit sc: SparkContext, partitions: Int): Try[RDD[Document]]
 }

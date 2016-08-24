@@ -17,7 +17,21 @@ case class OnlineLDAParams(
   partitions: Int = 100,
   optimizeDocConcentration: Boolean = true,
   perplexity: Boolean = true,
-  checkPointFreq: Int = 200
+  calFreq: Int = 200
 ) extends Serializable
 
-case class TopicUpdatesMap(var topicUpdatesMap: scala.collection.mutable.Map[Long, Array[Double]]) extends Serializable
+case class TopicUpdatesMap(
+  var topicUpdatesMap: scala.collection.mutable.Map[Long, Array[Double]]
+) extends Serializable
+
+case class PermanentParams(
+  eta: Double,
+  convergenceThreshold: Double,
+  numTopics: Int,
+  totalDocs: Long
+) extends Serializable
+
+case class TemporaryParams(
+  rho: Double,
+  mbSize: Double
+) extends Serializable

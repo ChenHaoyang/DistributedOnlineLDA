@@ -22,7 +22,7 @@ class LoadRDDFromHBase(
   /**
    *
    */
-  override def load(implicit sc: SparkContext): Try[RDD[Document]] = {
+  override def load(implicit sc: SparkContext, partitions: Int): Try[RDD[Document]] = {
     Try {
       val hbaseContext = Utils.getHBaseContext(sc)
       val scan = new Scan()
@@ -34,12 +34,8 @@ class LoadRDDFromHBase(
           val id = doc(0).split(":").map { x => x.toLong }
           val cnt = doc(1).split(":").map { x => x.toLong }
           Document(id, cnt)
-        })
-      rdd.setName("corpus")
-      rdd.persist(StorageLevel.MEMORY_AND_DISK)
-
-      //Utils.cleanCheckPoint(true)
-      //rdd.checkpoint()
+        }).repartition(partitions)
+        .persist(StorageLevel.DISK_ONLY)
 
       rdd
     }

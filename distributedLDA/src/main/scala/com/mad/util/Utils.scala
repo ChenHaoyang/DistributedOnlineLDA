@@ -5,7 +5,6 @@ import breeze.numerics._
 import com.mad.models.{ Document, ModelSStats }
 import org.apache.spark.mllib.linalg
 import org.apache.spark.mllib.linalg.Vectors
-import org.apache.spark.mllib.linalg.distributed.{ IndexedRowMatrix, IndexedRow }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.SparkContext
 import org.apache.hadoop.hbase.spark.HBaseContext
@@ -33,26 +32,6 @@ object Utils {
       .distinct
       .zipWithIndex
       .toMap
-
-  def denseMatrix2IndexedRows(dm: DenseMatrix[Double]): Array[IndexedRow] = {
-
-    dm(*, ::)
-      .map(_.toArray)
-      .toArray
-      .zipWithIndex
-      .map { case (row, index) => IndexedRow(index, Vectors.dense(row)) }
-
-  }
-
-  def rdd2DM(rddRows: RDD[IndexedRow]): DenseMatrix[Double] = {
-
-    val localRows = rddRows
-      .collect()
-      .sortBy(_.index)
-      .map(_.vector.toArray)
-
-    DenseMatrix(localRows: _*)
-  }
 
   def arraySum(a1: Array[Double], a2: Array[Double]): Array[Double] = {
 

@@ -15,11 +15,18 @@ object RunLDA {
     val miniBatch = args(3).toInt
     val partitions = args(4).toInt
     val learningRate = args(5).toDouble
-    val checkPoint = args(6).toInt
+    val calFreq = args(6).toInt
     val iteration = args(7).toInt
 
+    val conf = new SparkConf().setAppName("DistributedLDA")
+    conf.registerKryoClasses(Array(
+      classOf[TopicUpdatesMap],
+      classOf[PermanentParams],
+      classOf[TemporaryParams],
+      classOf[LambdaRow]
+    ))
     implicit val sc = new SparkContext(
-      new SparkConf().setAppName("DistributedLDA")
+      conf
     )
     //チェックポイントのパスを設定
     sc.setCheckpointDir(Utils.checkPointPath)
@@ -33,7 +40,7 @@ object RunLDA {
         totalDocs = totalDocs,
         miniBatchFraction = miniBatch.toDouble / totalDocs.toDouble,
         partitions = partitions,
-        checkPointFreq = checkPoint
+        calFreq = calFreq
       )
     )
     //
