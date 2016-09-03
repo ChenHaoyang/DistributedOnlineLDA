@@ -35,7 +35,7 @@ class LoadRDDFromHBase(
           val cnt = doc(1).split(":").map { x => x.toLong }
           Document(id, cnt)
         }).repartition(partitions)
-        .persist(StorageLevel.DISK_ONLY)
+        .persist(StorageLevel.MEMORY_AND_DISK)
 
       rdd
     }

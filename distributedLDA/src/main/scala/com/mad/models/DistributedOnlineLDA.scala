@@ -13,6 +13,7 @@ import org.apache.spark.storage.{ StorageLevel }
 import org.apache.spark.mllib.linalg.{ DenseVector, Vector, Vectors }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.broadcast.{ Broadcast }
+import org.apache.hadoop.fs.{ FileSystem, Path, FSDataOutputStream, FSDataInputStream }
 import org.apache.hadoop.hbase.spark.HBaseContext
 import org.apache.hadoop.hbase.{ TableName }
 import org.apache.hadoop.hbase.util.Bytes
@@ -31,20 +32,26 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
   type MatrixRow = Array[Double]
 
-  //private var gammaShape: Double = 100
+  private var curModel: LdaModel = null
+
+  //Broadcast変数(lambda行列の各行の和)
   private var lambdaSumbd: Broadcast[BDV[Double]] = null
+  //Broadcast変数(concentration parameter of Dirichlet distribution)
   private var alphabd: Broadcast[BDM[Double]] = null
+  //Broadcast変数(mini batchにおけるユニック単語のアレイ)
   private var wordTotalbd: Broadcast[Array[Long]] = null
-  //private var topicUpdates: Broadcast[TopicUpdatesMap] = null
+  //Broadcast変数(固定パラメター)
   private var permanentParamsbd: Broadcast[PermanentParams] = null
-  private var oldWordsLambdaSum: BDV[Double] = null
-  //  private var rho: Double = 0
-  //  private var mbSize: Int = 0
+
   /**
+   * 各文書を単語とそれのLambda行のアレイにして、
+   * E step推定用のRDDを生成する
    *
-   * @param mb
-   * @param model
-   * @return the joined document RDD
+   * @param mb ミニバッチ
+   * @param model 現在のLDAモデル
+   * @return 文書とLambdaとの結合の結果RDD
+   *         文書：Array[(単語ID, 単語頻度, 単語のLambda行)]
+   *
    */
   private def createJoinedRDD(mb: BowMinibatch, model: LdaModel): RDD[Array[(Long, Long, Array[Double])]] = {
     //get the distinct word size of the current mini-batch
@@ -61,30 +68,30 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
     //Join with lambda to get RDD of (wordId, ((wordCount, docId), lambda(wordId),::)) tuples
     val wordIdDocIdCountRow = wordIdDocIdCount
-      .join(lambdaRows.filter { row => wordTotalbd.value.contains(row.index) } //filter the lambda matrix before join
-        .map(row => (row.index, row.vector.toArray)))
+      .join(
+        lambdaRows.filter { row => wordTotalbd.value.contains(row.index) } //filter the lambda matrix before join
+          .mapPartitions(rowItr => { rowItr.map(row => (row.index, row.vector.toArray)) })
+      )
 
-    //Now group by docID in order to recover documents
+    //文書単位で単語とlambda情報を集める
     val wordIdCountRow = wordIdDocIdCountRow
       .map { case (wordId, ((wordCount, docId), wordRow)) => (docId, List((wordId, wordCount, wordRow))) }
-
-    //    val removedDocId = wordIdCountRow
-    //      .groupByKey()
-    //      .map { case (docId, wdIdCtRow) => wdIdCtRow.toArray }
 
     val removedDocId = wordIdCountRow.reduceByKey((w1, w2) => w1 ::: w2)
       .map(kv => kv._2.toArray)
 
-    //println("mb partition: " + removedDocId.partitions.size)
     removedDocId
   }
 
   /**
-   * Perform E-Step on minibatch.
+   * Variational Bayesian推定のE step
    *
-   * @param mb
-   * @param model
-   * @return The sufficient statistics for this minibatch
+   * @param mb ミニバッチ
+   * @param model 現在のLDAモデル
+   * @return M stepに必要な統計情報量
+   *         MinibatchSStats = (lambda更新用行列,
+   *                            ミニバッチのgamma行列,
+   *                            ミニバッチサイズ)
    */
   override def eStep(
     mb: BowMinibatch,
@@ -99,26 +106,31 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
     //Perform e-step on documents as a map, then reduce results by wordId.
     val eStepResult = removedDocId
-      .map(wIdCtRow => {
+      .mapPartitions(wIdCtRowItr => {
         val localParams = permanentParamsbd.value
-        val currentWordsWeight = wIdCtRow.map(_._3.toArray)
-        val currentTopicsMatrix = new BDM( //V * T
-          currentWordsWeight.size,
-          localParams.numTopics,
-          currentWordsWeight.flatten,
-          0,
-          localParams.numTopics,
-          true
-        )
-        val ELogBetaDoc = Utils.dirichletExpectation(currentTopicsMatrix, lambdaSumbd.value) //V * T
-        DistributedOnlineLDA.oneDocEStep(
-          Document(wIdCtRow.map(_._1), wIdCtRow.map(_._2)),
-          localParams.numTopics,
-          localParams.convergenceThreshold,
-          alphabd.value,
-          ELogBetaDoc
-        )
-      }).persist(StorageLevel.DISK_ONLY)
+        wIdCtRowItr.map(wIdCtRow => {
+          val currentWordsWeight = wIdCtRow.map(_._3.toArray)
+          val currentTopicsMatrix = new BDM( //V * T
+            currentWordsWeight.size,
+            localParams.numTopics,
+            currentWordsWeight.flatten,
+            0,
+            localParams.numTopics,
+            true
+          )
+          //println("currentTopicsMatrix max" + currentTopicsMatrix.max)
+          //println("lambdaSum min:" + lambdaSumbd.value.min)
+          val ELogBetaDoc = Utils.dirichletExpectation(currentTopicsMatrix, lambdaSumbd.value) //V * T
+
+          DistributedOnlineLDA.oneDocEStep(
+            Document(wIdCtRow.map(_._1), wIdCtRow.map(_._2)),
+            localParams.numTopics,
+            localParams.convergenceThreshold,
+            alphabd.value,
+            ELogBetaDoc
+          )
+        })
+      }).persist(StorageLevel.MEMORY_AND_DISK)
       .setName("eStepResult")
     //   D * T
     val gammaMT = BDM.vertcat(eStepResult.map(x => x.topicProportions.t).collect(): _*)
@@ -156,7 +168,8 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     ))
     val topicUpdatesbd = model.lambda.sparkContext.broadcast(topicUpdatesMap)
 
-    oldWordsLambdaSum = model.lambda.filter { row =>
+    //旧lambdaにおいて、文書単語のlambda行の和を求める
+    val oldWordsLambdaSum = model.lambda.filter { row =>
       topicUpdatesbd.value.topicUpdatesMap.contains(row.index)
     }.treeAggregate(BDV.zeros[Double](params.numTopics))(
       seqOp = (c, v) => {
@@ -186,6 +199,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
         }
       })
 
+    //新lambdaにおいて、文書単語のlambda行の和を求める
     val newWordsLambdaSum = model.lambda.filter { row =>
       topicUpdatesbd.value.topicUpdatesMap.contains(row.index)
     }.treeAggregate(BDV.zeros[Double](params.numTopics))(
@@ -197,13 +211,8 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     }
     )
 
-    //println("newWordsLambdaSum: " + newWordsLambdaSum(0))
-
     val lambdaSumUpdate = newWordsLambdaSum - oldWordsLambdaSum
 
-    //topicUpdates.destroy()
-    //model.lambda.rows.unpersist()
-    //model.lambda = newTopics
     temporaryParamsbd.unpersist(true)
     temporaryParamsbd.destroy()
     topicUpdatesbd.unpersist(true)
@@ -212,6 +221,8 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     topicUpdatesMap.topicUpdatesMap = null
 
     if (params.optimizeDocConcentration) DistributedOnlineLDA.updateAlpha(model, gammaMT, rho)
+
+    //println("lambda: " + model.lambda)
 
     (model, lambdaSumUpdate)
   }
@@ -223,6 +234,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
     val topics = sc.parallelize(Array.range(0, params.vocabSize - 1), params.partitions)
     val hbaseContext = Utils.getHBaseContext(sc)
+    //val value = 1.0 / params.vocabSize.toDouble
     //initialize lambda matrix in HBase
     topics.hbaseBulkPut(hbaseContext, TableName.valueOf("lambda"),
       (wordID) => {
@@ -262,7 +274,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
         )
         arrayBuf.clear()
         row
-      }).repartition(params.partitions)
+      }) //.repartition(params.partitions)
       .persist(StorageLevel.MEMORY_ONLY)
       .setName("lambda")
 
@@ -293,63 +305,61 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     //val testRDD = sc.parallelize(1 to 5, 5).map(x => LambdaRow(x, Vectors.dense(Array(1.0)))).persist(StorageLevel.MEMORY_ONLY)
     //testRDD.foreach { x => x.vector = Vectors.dense(Array(2.0)) }
     //val re = testRDD.collect().foreach(x => print(x.vector(0)))
-    //var ttlStart = System.currentTimeMillis()
-    permanentParamsbd = sc.broadcast(PermanentParams(
-      eta = params.eta,
-      convergenceThreshold = params.convergenceThreshold,
-      numTopics = params.numTopics,
-      totalDocs = params.totalDocs
-    ))
-
-    //初期化 lambda matrix V * T
-    println("===============================================initializing lambda===============================================")
-    var start = System.currentTimeMillis()
-    //initLambda(sc)
-    val lambda = loadLambda(sc)
-    println("process time: " + (System.currentTimeMillis() - start) / 1000 + "s")
-    println("===============================================lambda initialized===============================================")
+    var start: Long = 0
+    var mbProcessed = 0
 
     //corpusとheldOutの初期化
-    var corpus = loader.load(sc, params.partitions)
-      .get
+    var corpus = loader.load(sc, params.partitions).get
       .setName("corpus")
     var heldOut = sc.objectFile[Document]("/home/charles/Data/input/heldout")
       .repartition(params.partitions)
       .persist(StorageLevel.MEMORY_AND_DISK)
       .setName("heldOut")
 
-    /** alias for docConcentration */
-    def alpha = if (params.alpha.size == 1) {
-      if (params.alpha(0) == -1) new BDM(params.numTopics, 1, Array.fill(params.numTopics)(1.0 / params.numTopics))
-      else {
+    if (curModel == null) {
+      permanentParamsbd = sc.broadcast(PermanentParams(
+        eta = params.eta,
+        convergenceThreshold = params.convergenceThreshold,
+        numTopics = params.numTopics,
+        totalDocs = params.totalDocs
+      ))
+
+      /** alias for docConcentration */
+      def alpha = if (params.alpha.size == 1) {
+        if (params.alpha(0) == -1)
+          new BDM(params.numTopics, 1, Array.fill(params.numTopics)(1.0 / params.numTopics))
+        else {
+          require(
+            params.alpha(0) >= 0,
+            s"all entries in alpha must be >=0, got: $params.alpha(0)"
+          )
+          new BDM(params.numTopics, 1, Array.fill(params.numTopics)(params.alpha(0)))
+        }
+      } else {
         require(
-          params.alpha(0) >= 0,
-          s"all entries in alpha must be >=0, got: $params.alpha(0)"
+          params.alpha.size == params.numTopics,
+          s"alpha must have length k, got: $params.alpha.size"
         )
-        new BDM(params.numTopics, 1, Array.fill(params.numTopics)(params.alpha(0)))
+        params.alpha.toArray.foreach {
+          case (x) =>
+            require(x >= 0, s"all entries in alpha must be >= 0, got: $x")
+        }
+        new BDM(params.numTopics, 1, params.alpha.toArray)
       }
-    } else {
-      require(
-        params.alpha.size == params.numTopics,
-        s"alpha must have length k, got: $params.alpha.size"
-      )
-      params.alpha.toArray.foreach {
-        case (x) =>
-          require(x >= 0, s"all entries in alpha must be >= 0, got: $x")
-      }
-      new BDM(params.numTopics, 1, params.alpha.toArray)
-    }
 
-    var curModel = ModelSStats[RDD[LambdaRow]](lambda, alpha, params.eta, 0)
-
-    var mbProcessed = 0
+      //初期化 lambda matrix V * T
+      println("===============================================initializing lambda===============================================")
+      start = System.currentTimeMillis()
+      //initLambda(sc, params.numTopics)
+      val lambda = loadLambda(sc)
+      println("process time: " + (System.currentTimeMillis() - start) / 1000 + "s")
+      println("===============================================lambda initialized===============================================")
+      curModel = ModelSStats[RDD[LambdaRow]](lambda, alpha, params.eta, 0)
+    } else
+      mbProcessed = curModel.numUpdates
 
     //lambda行列の行和を計算
-    println("===============================================calculating lambdaSum===============================================")
-    start = System.currentTimeMillis()
     val lambdaSum = sumLambda(curModel.lambda)
-    println("LambdaSum time: " + (System.currentTimeMillis() - start) / 1000 + "s")
-    println("===============================================lambdaSum calculated===============================================")
 
     val bufferedWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream("/home/charles/Data/output/perplxity.txt", true)))
 
@@ -382,7 +392,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
       //      }
 
       println("===============================================Iteration: " + mbProcessed + "===============================================")
-      val mb = corpus.sample(true, params.miniBatchFraction)
+      val mb = corpus.sample(true, params.miniBatchFraction, System.currentTimeMillis())
         .persist(StorageLevel.MEMORY_AND_DISK)
         .setName("mini_batch")
 
@@ -412,7 +422,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
       lambdaSumbd = sc.broadcast(lambdaSum)
       alphabd = sc.broadcast(curModel.alpha)
 
-      if (params.perplexity && (mbProcessed % params.calFreq == 1)) {
+      if (params.perplexity && (mbProcessed % params.perplexityFreq == 1)) {
         //start = System.currentTimeMillis()
         val logPerplex = logPerplexity(heldOut, curModel)
         println("logPerplexity: " + logPerplex)
@@ -427,6 +437,13 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
       mb.unpersist()
 
+      if (mbProcessed % params.checkPointFreq == 0) {
+        makeCheckPoint(curModel)
+        println("checkPoint succeed")
+      }
+
+      //println("min alpha: " + curModel.alpha.min)
+      //println("min lambdaSum: " + lambdaSum.max)
       println("mbSize: " + mbSStats._3 + ",   wordsNum: " + wordNum)
       println("Iteration time: " + (System.currentTimeMillis() - start) / 1000 + "s")
     }
@@ -524,41 +541,81 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     corpusPart + topicsPart
   }
 
+  def saveLambda(lambda: RDD[LambdaRow]) {
+    val hbaseContext = Utils.getHBaseContext(sc)
+    lambda.hbaseBulkPut(hbaseContext, TableName.valueOf("lambda"),
+      (r) => {
+        val values = r.vector.toArray
+        val family = Bytes.toBytes("topics")
+        val put = new Put(Bytes.toBytes(r.index.toString()))
+        val topicNum = values.length
+        for (i <- 1 to topicNum) {
+          put.addColumn(family, Bytes.toBytes(i.toString()), Bytes.toBytes(values(i - 1)))
+        }
+        put
+      })
+  }
+
   /**
    * Save a learned topic model. Uses Java object serialization.
    */
-  def saveModel(model: LdaModel, saveLocation: File)(implicit sc: SparkContext): Try[Unit] =
+  def saveModel(model: LdaModel)(implicit sc: SparkContext): Try[Unit] =
     Try {
-      val lambda = model.lambda
-      val hbaseContext = Utils.getHBaseContext(sc)
-      lambda.hbaseBulkPut(hbaseContext, TableName.valueOf("lambda"),
-        (r) => {
-          val values = r.vector.toArray
-          val family = Bytes.toBytes("topics")
-          val put = new Put(Bytes.toBytes(r.index.toString()))
-          val topicNum = values.length
-          for (i <- 1 to topicNum) {
-            put.addColumn(family, Bytes.toBytes(i.toString()), Bytes.toBytes(values(i - 1)))
-          }
-          put
-        })
-
-      val oos = new ObjectOutputStream(new FileOutputStream(saveLocation))
-      oos.writeObject(model.copy(lambda = null))
-      oos.close()
+      makeCheckPoint(model)
     }
 
   /**
    * Load a saved topic model from save location.
    * Uses Java object deserialization.
    */
-  def loadModel(saveLocation: File)(implicit sc: SparkContext): Try[LdaModel] = {
+  def loadModel()(implicit sc: SparkContext): Try[LdaModel] = {
     Try {
-      val model = new ObjectInputStream(new FileInputStream(saveLocation))
-        .readObject()
-        .asInstanceOf[LdaModel]
-      model.copy(lambda = loadLambda(sc))
+      loadCheckPoint(sc)
     }
+  }
+
+  private def makeCheckPoint(model: LdaModel) {
+    //Utils.cleanCheckPoint
+    //model.lambda.saveAsObjectFile(Utils.checkPointPath)
+    saveLambda(model.lambda)
+    val tmpVal = model.lambda
+    model.lambda = null
+
+    //Utils.cleanLocalDirectory()
+    val fs = FileSystem.get(sc.hadoopConfiguration)
+    //val fo = new FileOutputStream(Utils.localPath)
+    val oos = new ObjectOutputStream(new FSDataOutputStream(fs.create(new Path(Utils.savePath))))
+    oos.writeObject(model)
+    //fo.close()
+    oos.close()
+    fs.close()
+
+    model.lambda = tmpVal
+
+  }
+
+  private def loadCheckPoint(sc: SparkContext): LdaModel = {
+    val fs = FileSystem.get(sc.hadoopConfiguration)
+    val ois = new ObjectInputStream(new FSDataInputStream(fs.open(new Path(Utils.savePath))))
+    val model = ois.readObject()
+      .asInstanceOf[LdaModel]
+
+    ois.close
+    fs.close
+
+    permanentParamsbd = sc.broadcast(PermanentParams(
+      eta = params.eta,
+      convergenceThreshold = params.convergenceThreshold,
+      numTopics = params.numTopics,
+      totalDocs = params.totalDocs
+    ))
+    model.lambda = loadLambda(sc) //sc.objectFile[LambdaRow](Utils.checkPointPath)
+    model
+  }
+
+  def continueTraining(loader: LoadRDD)(implicit sc: SparkContext): LdaModel = {
+    curModel = loadCheckPoint(sc)
+    inference(loader)
   }
 }
 
@@ -594,6 +651,7 @@ object DistributedOnlineLDA {
 
     var gammaDoc = getGamma(numTopics)
 
+    //println("min gamma:" + gammaDoc.min)
     var expELogThetaDoc = exp(Utils.dirichletExpectation(gammaDoc)) //T * 1
     var expELogBetaDoc = exp(ELogBetaDoc) //V * T                                                       
     var phiNorm = expELogBetaDoc * expELogThetaDoc + 1e-100 //V * 1
@@ -601,7 +659,7 @@ object DistributedOnlineLDA {
     var convergence = false
     var iter = 0
 
-    //begin update iteration.  Stop if convergence has occurred or we reach the max number of iterations.
+    //begin update iteration.  Stop if convergence has occurred.
     while (!convergence) {
 
       val lastGammaD = gammaDoc.copy
@@ -615,13 +673,18 @@ object DistributedOnlineLDA {
 
       iter += 1
     }
-    //                                               V * 1                 1 * T                                          
-    val lambdaUpdatePreCompute: BDM[Double] = (wordCts :/ phiNorm) * (expELogThetaDoc.t)
+    //                                               T * 1                 1 * V                                          
+    val lambdaUpdatePreCompute: BDM[Double] = (expELogThetaDoc) * ((wordCts :/ phiNorm).t)
     //println("=====================================" + lambdaUpdatePreCompute.rows + "=====================================")
 
+    //    val data = new BDM(doc.wordCts.size, 1, Array.fill(doc.wordCts.size)(1.0))
+    //    val test1 = ((expELogThetaDoc) * (data :/ phiNorm).t) :* (expELogBetaDoc.t)
+    //    println(test1(::, 0).sum)
+
     //Compute lambda row updates and zip with rowIds (note: rowIds = wordIds)
-    //                          V * T                  V * T   
-    val lambdaUpdate = (lambdaUpdatePreCompute :* expELogBetaDoc).t // T * V
+    //val test = lambdaUpdatePreCompute :* (expELogBetaDoc.t)
+    //                          T * V                  T * V   
+    val lambdaUpdate = (lambdaUpdatePreCompute :* (expELogBetaDoc.t))
       .toArray
       .grouped(numTopics)
       .toArray
@@ -651,6 +714,8 @@ object DistributedOnlineLDA {
     //val rho = math.pow(params.decay + numUpdates, -params.learningRate)
     val updatedLambda1 = lambdaRow.map(_ * (1.0 - rho))
     val updatedLambda2 = updateRow.map(x => (x * (totalDocs.toDouble / mbSize) + eta) * rho)
+
+    //println(updatedLambda2.max)
 
     Utils.arraySum(updatedLambda1, updatedLambda2)
   }

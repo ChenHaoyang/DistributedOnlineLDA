@@ -8,6 +8,7 @@ import com.mad.util._
 import java.io.File
 
 object RunLDA {
+  class Counter extends Serializable { var i: Int = 0; def inc: Unit = i += 1 }
   def main(args: Array[String]) {
     val topic_num = args(0).toInt
     val totalDocs = args(1).toLong
@@ -15,8 +16,9 @@ object RunLDA {
     val miniBatch = args(3).toInt
     val partitions = args(4).toInt
     val learningRate = args(5).toDouble
-    val calFreq = args(6).toInt
+    val checkPointFreq = args(6).toInt
     val iteration = args(7).toInt
+    val isContinue = args(8).toBoolean
 
     val conf = new SparkConf().setAppName("DistributedLDA")
     conf.registerKryoClasses(Array(
@@ -28,29 +30,52 @@ object RunLDA {
     implicit val sc = new SparkContext(
       conf
     )
+    //val cachedRdd = sc.parallelize(1 to 5, 5).map(x => new Counter()).cache
+    //
+    //
+    //// trying to apply modification
+    //
+    //
+    //cachedRdd.foreachPartition { p => p.map(x => x.inc) }
+    //
+    //
+    //// modification worked: all values are ones
+    //
+    //
+    //cachedRdd.collect.foreach(x => println(x.i))
     //チェックポイントのパスを設定
-    sc.setCheckpointDir(Utils.checkPointPath)
+    //sc.setCheckpointDir(Utils.checkPointPath)
 
     val lda = new DistributedOnlineLDA(
       OnlineLDAParams(
         vocabSize = totalVcab,
-        eta = 1.0 / totalVcab.toDouble,
+        eta = 1.0 / topic_num.toDouble,
         learningRate = learningRate,
         maxOutterIter = iteration,
+        numTopics = topic_num,
         totalDocs = totalDocs,
         miniBatchFraction = miniBatch.toDouble / totalDocs.toDouble,
         partitions = partitions,
-        calFreq = calFreq
+        checkPointFreq = checkPointFreq
       )
     )
-    //
-    val model = lda.inference(new LoadRDDFromHBase(
+    val rddLoader = new LoadRDDFromHBase(
       "url_info",
       "corpus",
       "doc"
-    ))
+    )
+    val model = {
+      if (isContinue) {
+        println("continue")
+        lda.continueTraining(rddLoader)
+      } else {
+        println("new")
+        lda.inference(rddLoader)
+      }
+    }
 
-    lda.saveModel(model, new File("/home/charles/Data/output/lda"))
+    lda.saveModel(model)
+    //Utils.cleanCheckPoint()
 
     sc.stop()
   }

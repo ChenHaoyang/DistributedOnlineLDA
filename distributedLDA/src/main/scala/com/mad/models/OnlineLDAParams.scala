@@ -17,7 +17,8 @@ case class OnlineLDAParams(
   partitions: Int = 100,
   optimizeDocConcentration: Boolean = true,
   perplexity: Boolean = true,
-  calFreq: Int = 200
+  perplexityFreq: Int = 4000,
+  checkPointFreq: Int = 5000
 ) extends Serializable
 
 case class TopicUpdatesMap(
