@@ -17,7 +17,8 @@ case class OnlineLDAParams(
   partitions: Int = 100,
   optimizeDocConcentration: Boolean = true,
   perplexity: Boolean = true,
-  perplexityFreq: Int = 4000,
+  initLambda: Boolean = true,
+  perplexityFreq: Int = 200,
   checkPointFreq: Int = 5000
 ) extends Serializable
 

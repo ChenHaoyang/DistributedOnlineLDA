@@ -1,6 +1,7 @@
 package com.mad.app
 
 import org.apache.spark.{ SparkConf, SparkContext }
+import org.apache.spark.mllib.linalg.{ Vectors }
 import com.mad.models._
 import com.mad.io._
 import com.mad.util._
@@ -16,9 +17,14 @@ object RunLDA {
     val miniBatch = args(3).toInt
     val partitions = args(4).toInt
     val learningRate = args(5).toDouble
-    val checkPointFreq = args(6).toInt
-    val iteration = args(7).toInt
-    val isContinue = args(8).toBoolean
+    val decay = args(6).toDouble
+    val eta = args(7).toDouble
+    val checkPointFreq = args(8).toInt
+    val perplexityFreq = args(9).toInt
+    val iteration = args(10).toInt
+    val isContinue = args(11).toBoolean
+    val initLambda = args(12).toBoolean
+    val alpha = args(13).toDouble
 
     val conf = new SparkConf().setAppName("DistributedLDA")
     conf.registerKryoClasses(Array(
@@ -49,14 +55,18 @@ object RunLDA {
     val lda = new DistributedOnlineLDA(
       OnlineLDAParams(
         vocabSize = totalVcab,
-        eta = 1.0 / topic_num.toDouble,
+        alpha = Vectors.dense(alpha),
+        eta = eta,
         learningRate = learningRate,
+        decay = decay,
         maxOutterIter = iteration,
         numTopics = topic_num,
         totalDocs = totalDocs,
         miniBatchFraction = miniBatch.toDouble / totalDocs.toDouble,
         partitions = partitions,
-        checkPointFreq = checkPointFreq
+        checkPointFreq = checkPointFreq,
+        perplexityFreq = perplexityFreq,
+        initLambda = initLambda
       )
     )
     val rddLoader = new LoadRDDFromHBase(
