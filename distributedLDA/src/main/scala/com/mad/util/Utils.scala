@@ -18,6 +18,7 @@ object Utils {
 
   val checkPointPath = "/home/charles/Data/output/checkpoint"
   val savePath = "/home/charles/Data/output/model/LDA.data"
+  val hbaseTableName = "lambda"
   /**
    *
    */
@@ -27,6 +28,12 @@ object Utils {
     hbaseConf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/hbase-site.xml"))
 
     new HBaseContext(sc, hbaseConf)
+  }
+
+  def median[T](s: Seq[T])(implicit n: Fractional[T]) = {
+    import n._
+    val (lower, upper) = s.sortWith(_ < _).splitAt(s.size / 2)
+    if (s.size % 2 == 0) (lower.last + upper.head) / fromInt(2) else upper.head
   }
 
   def mapVocabId(vocab: Seq[String]): Map[String, Int] =
@@ -54,17 +61,21 @@ object Utils {
 
       case x if (x.rows == 1 || x.cols == 1) =>
         if (sumVector == null)
-          digamma(srcMatrix) - digamma(sum(srcMatrix))
+          //digamma(srcMatrix) - digamma(sum(srcMatrix))
+          srcMatrix.map { x => if (x < 0) println("vector has minus:" + x); digamma(x) } - digamma(sum(srcMatrix))
         else
-          digamma(srcMatrix) - digamma(sumVector.toDenseMatrix)
+          srcMatrix.map { x => if (x < 0) println("vector has minus:" + x); digamma(x) } - digamma(sumVector.toDenseMatrix)
+      //digamma(srcMatrix) - digamma(sumVector.toDenseMatrix)
 
       case _ =>
-
-        val first_term = digamma(srcMatrix)
+        val test = sum(srcMatrix, Axis._0)
+        val first_term = srcMatrix.map { x => if (x < 0) println("Matrix has minus: " + x); digamma(x) } //digamma(srcMatrix)
         if (sumVector == null)
-          first_term(*, ::) - digamma(sum(srcMatrix, Axis._0)).toDenseVector
+          //first_term(*, ::) - digamma(sum(srcMatrix, Axis._0)).toDenseVector
+          first_term(*, ::) - sum(srcMatrix, Axis._0).map { x => if (x < 0) println("Sum has minus: " + x); digamma(x) }.toDenseVector
         else
-          first_term(*, ::) - digamma(sumVector)
+          //first_term(*, ::) - digamma(sumVector)
+          first_term(*, ::) - sumVector.map { x => if (x < 0) println("Sum has minus: " + x); digamma(x) }
     }
 
   def getUniqueWords(documents: Seq[Document]): Map[Double, Int] = {

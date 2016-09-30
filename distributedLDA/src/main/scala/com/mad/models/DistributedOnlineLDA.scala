@@ -22,6 +22,8 @@ import org.apache.hadoop.hbase.spark.HBaseRDDFunctions._
 import org.apache.hadoop.fs.Path
 import scala.collection.mutable.{ ArrayBuffer, HashSet }
 import scala.util.Try
+import scala.math.{ max }
+import scala.util.control.Breaks._
 
 class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) extends OnlineLDA with Serializable {
 
@@ -53,7 +55,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
    *         文書：Array[(単語ID, 単語頻度, 単語のLambda行)]
    *
    */
-  private def createJoinedRDD(mb: BowMinibatch, model: LdaModel): RDD[Array[(Long, Long, Array[Double])]] = {
+  private def createJoinedRDD(mb: BowMinibatch, model: LdaModel): RDD[Array[(Long, Double, Array[Double])]] = {
     //get the distinct word size of the current mini-batch
     val lambdaRows = model.lambda
     val wordTotalbd = this.wordTotalbd
@@ -239,12 +241,12 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
    */
   private def initLambda(sc: SparkContext, topicNum: Int) = {
 
-    val topics = sc.parallelize(Array.range(0, params.vocabSize - 1), params.partitions)
+    val topics = sc.parallelize(Array.range(params.filterBase, params.vocabSize - 1), params.partitions)
     val hbaseContext = Utils.getHBaseContext(sc)
     val value = 1.0D
     //val value = 1.0 / params.vocabSize.toDouble
     //initialize lambda matrix in HBase
-    topics.hbaseBulkPut(hbaseContext, TableName.valueOf("lambda"),
+    topics.hbaseBulkPut(hbaseContext, TableName.valueOf(Utils.hbaseTableName),
       (wordID) => {
         //        val randBasis = new RandBasis(new org.apache.commons.math3.random.MersenneTwister(
         //          new Random(new Random().nextLong()).nextLong()
@@ -268,7 +270,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     val scan = new Scan()
       .addFamily(Bytes.toBytes("topics"))
       .setCaching(100)
-    val matrixRows = hbaseContext.hbaseRDD(TableName.valueOf("lambda"), scan)
+    val matrixRows = hbaseContext.hbaseRDD(TableName.valueOf(Utils.hbaseTableName), scan)
       .map(pair => {
         val localParams = permanentParamsbd.value
         val arrayBuf = new ArrayBuffer[Double]()
@@ -303,6 +305,18 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     )
   }
 
+  private def medianCal = (lambda: RDD[LambdaRow]) => {
+    val maxArray = lambda.treeAggregate(Array.fill(params.numTopics)(0.0))(
+      seqOp = (c, v) => {
+      c.zip(v.vector).map { case (x, y) => max(x, y) }
+    },
+      combOp = (c1, c2) => {
+      c1.zip(c2).map { case (x, y) => max(x, y) }
+    }
+    )
+    Utils.median(maxArray)
+  }
+
   /**
    * 潜在トピックの推定を行う
    *
@@ -313,9 +327,11 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     //val testRDD = sc.parallelize(1 to 5, 5).map(x => LambdaRow(x, Vectors.dense(Array(1.0)))).persist(StorageLevel.MEMORY_ONLY)
     //testRDD.foreach { x => x.vector = Vectors.dense(Array(2.0)) }
     //val re = testRDD.collect().foreach(x => print(x.vector(0)))
-    val learnedWords = new HashSet[Long]()
+    //val learnedWords = new HashSet[Long]()
     var start: Long = 0
     var mbProcessed = 0
+    //val max_iter = 5;
+    //var cur_iter = 1;
 
     //corpusとheldOutの初期化
     var corpus = loader.load(sc, params.partitions).get
@@ -324,6 +340,10 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
       .repartition(params.partitions)
       .persist(StorageLevel.MEMORY_AND_DISK)
       .setName("heldOut")
+    //    var heldOut = sc.parallelize(corpus.takeSample(true, 100), corpus.partitions.size)
+    //      .persist(StorageLevel.MEMORY_AND_DISK)
+    //      .setName("heldOut")
+    //    heldOut.saveAsObjectFile("/home/charles/Data/input/heldout")
 
     if (curModel == null) {
       permanentParamsbd = sc.broadcast(PermanentParams(
@@ -362,7 +382,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
       if (params.initLambda)
         initLambda(sc, params.numTopics)
       val lambda = loadLambda(sc)
-      println("process time: " + (System.currentTimeMillis() - start) / 1000 + "s")
+      println("process time: " + (System.currentTimeMillis() - start) / 1000.0 + "s")
       println("===============================================lambda initialized===============================================")
       curModel = ModelSStats[RDD[LambdaRow]](lambda, alpha, params.eta, 0)
     } else
@@ -372,99 +392,111 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     var lambdaSum = sumLambda(curModel.lambda)
 
     val bufferedWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream("/home/charles/Data/output/perplxity.txt", true)))
+    val bwMedian = new BufferedWriter(new OutputStreamWriter(new FileOutputStream("/home/charles/Data/output/median.txt", true)))
 
     lambdaSumbd = sc.broadcast(lambdaSum)
     alphabd = sc.broadcast(curModel.alpha)
 
     /*Iterationに入る*/
-    while (mbProcessed <= params.maxOutterIter) {
-      start = System.currentTimeMillis()
-      mbProcessed += 1
+    breakable {
+      while (mbProcessed < params.maxOutterIter) {
+        start = System.currentTimeMillis()
+        mbProcessed += 1
 
-      //corpusとheldOutの再初期化(for cleaner reason)
-      //      if ((System.currentTimeMillis() - ttlStart) / 1000 > 3400) {
-      //        ttlStart = System.currentTimeMillis()
-      //        //TTLのため、permanentParamsbdを再送する
-      //        permanentParamsbd.unpersist(true)
-      //        permanentParamsbd.destroy()
-      //        permanentParamsbd = sc.broadcast(PermanentParams(
-      //          eta = params.eta,
-      //          convergenceThreshold = params.convergenceThreshold,
-      //          numTopics = params.numTopics,
-      //          totalDocs = params.totalDocs
-      //        ))
-      //
-      //        corpus.unpersist()
-      //        corpus = loader.load(sc).get
-      //        heldOut.unpersist()
-      //        heldOut = sc.objectFile("/home/charles/Data/input/heldout")
-      //        heldOut.persist(StorageLevel.MEMORY_AND_DISK)
-      //      }
+        //corpusとheldOutの再初期化(for cleaner reason)
+        //      if ((System.currentTimeMillis() - ttlStart) / 1000 > 3400) {
+        //        ttlStart = System.currentTimeMillis()
+        //        //TTLのため、permanentParamsbdを再送する
+        //        permanentParamsbd.unpersist(true)
+        //        permanentParamsbd.destroy()
+        //        permanentParamsbd = sc.broadcast(PermanentParams(
+        //          eta = params.eta,
+        //          convergenceThreshold = params.convergenceThreshold,
+        //          numTopics = params.numTopics,
+        //          totalDocs = params.totalDocs
+        //        ))
+        //
+        //        corpus.unpersist()
+        //        corpus = loader.load(sc).get
+        //        heldOut.unpersist()
+        //        heldOut = sc.objectFile("/home/charles/Data/input/heldout")
+        //        heldOut.persist(StorageLevel.MEMORY_AND_DISK)
+        //      }
 
-      println("===============================================Iteration: " + mbProcessed + "===============================================")
-      val mb = corpus.sample(true, params.miniBatchFraction, System.currentTimeMillis())
-        .persist(StorageLevel.MEMORY_AND_DISK)
-        .setName("mini_batch")
+        println("===============================================Iteration: " + mbProcessed + "===============================================")
+        val mb = corpus.sample(true, params.miniBatchFraction, System.currentTimeMillis())
+          .persist(StorageLevel.MEMORY_AND_DISK)
+          .setName("mini_batch")
 
-      wordTotalbd = sc.broadcast(mb.flatMap(docBOW => docBOW.wordIds).distinct().collect())
-      wordTotalbd.value.foreach { x => learnedWords.add(x) }
-      println("learned words count: " + learnedWords.size)
+        wordTotalbd = sc.broadcast(mb.flatMap(docBOW => docBOW.wordIds).distinct().collect())
+        //      wordTotalbd.value.foreach { x => learnedWords.add(x) }
+        //      println("learned words count: " + learnedWords.size)
 
-      val mbSStats = eStep(
-        mb,
-        curModel
-      )
+        val mbSStats = eStep(
+          mb,
+          curModel
+        )
 
-      curModel.numUpdates = mbProcessed
+        curModel.numUpdates = mbProcessed
 
-      val mResult = mStep(
-        curModel,
-        mbSStats._1,
-        mbSStats._2,
-        mbSStats._3
-      )
-      curModel = mResult
-      //lambdaSum += mResult._2
+        val mResult = mStep(
+          curModel,
+          mbSStats._1,
+          mbSStats._2,
+          mbSStats._3
+        )
+        curModel = mResult
+        //lambdaSum += mResult._2
 
-      lambdaSum = sumLambda(curModel.lambda)
+        lambdaSum = sumLambda(curModel.lambda)
 
-      lambdaSumbd.unpersist(true)
-      alphabd.unpersist(true)
-      lambdaSumbd.destroy()
-      alphabd.destroy()
+        lambdaSumbd.unpersist(true)
+        alphabd.unpersist(true)
+        lambdaSumbd.destroy()
+        alphabd.destroy()
 
-      lambdaSumbd = sc.broadcast(lambdaSum)
-      alphabd = sc.broadcast(curModel.alpha)
+        lambdaSumbd = sc.broadcast(lambdaSum)
+        alphabd = sc.broadcast(curModel.alpha)
 
-      if (params.perplexity && (mbProcessed % params.perplexityFreq == 1)) {
-        //start = System.currentTimeMillis()
-        val logPerplex = logPerplexity(heldOut, curModel)
-        println("logPerplexity: " + logPerplex)
-        //println("logPerplexity time: " + (System.currentTimeMillis() - start) / 1000 + "s")
-        bufferedWriter.write(mbProcessed + " " + logPerplex + "\n")
-        bufferedWriter.flush()
-        //System.gc()
+        if (params.perplexity && (mbProcessed % params.perplexityFreq == 0)) {
+          //start = System.currentTimeMillis()
+          val logPerplex = logPerplexity(heldOut, curModel)
+          println("logPerplexity: " + logPerplex)
+          //println("logPerplexity time: " + (System.currentTimeMillis() - start) / 1000 + "s")
+          bufferedWriter.write(mbProcessed + " " + logPerplex + "\n")
+          bufferedWriter.flush()
+          //mbProcessed = 0
+          //curModel.numUpdates = 0
+          //curModel.lambda.unpersist(true)
+          //curModel.lambda = loadLambda(sc)
+          //if (cur_iter >= max_iter) break
+          //else cur_iter += 1
+          //System.gc()
+        }
+        val wordNum = wordTotalbd.value.filter { x => x >= params.filterBase }.size
+        wordTotalbd.unpersist(true)
+        wordTotalbd.destroy()
+
+        mb.unpersist()
+
+        if (mbProcessed % params.checkPointFreq == 0) {
+          makeCheckPoint(curModel)
+          //        val bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream("/home/charles/Data/output/learnedWords.txt")))
+          //        learnedWords.foreach { x => bw.write(x.toString + "\n") }
+          //        bw.close()
+          println("checkPoint succeed")
+          bwMedian.write(mbProcessed + ": " + medianCal(curModel.lambda) + "\n")
+          bwMedian.flush()
+        }
+
+        //println("min alpha: " + curModel.alpha.min)
+        //println("min lambdaSum: " + lambdaSum.max)
+        println("mbSize: " + mbSStats._3 + ",   wordsNum: " + wordNum)
+        println("Iteration time: " + (System.currentTimeMillis() - start) / 1000.0 + "s")
       }
-      val wordNum = wordTotalbd.value.size
-      wordTotalbd.unpersist(true)
-      wordTotalbd.destroy()
-
-      mb.unpersist()
-
-      if (mbProcessed % params.checkPointFreq == 0) {
-        makeCheckPoint(curModel)
-        val bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream("/home/charles/Data/output/learnedWords.txt")))
-        learnedWords.foreach { x => bw.write(x.toString + "\n") }
-        bw.close()
-        println("checkPoint succeed")
-      }
-
-      //println("min alpha: " + curModel.alpha.min)
-      //println("min lambdaSum: " + lambdaSum.max)
-      println("mbSize: " + mbSStats._3 + ",   wordsNum: " + wordNum)
-      println("Iteration time: " + (System.currentTimeMillis() - start) / 1000 + "s")
     }
     bufferedWriter.close()
+    bwMedian.close()
     curModel
   }
 
@@ -473,7 +505,9 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     model: LdaModel
   ): Double = {
 
-    val tokensCount = documents.map(doc => doc.wordCts.sum).sum
+    val filterBase = params.filterBase
+    val tokensCount = documents.map(doc => doc.wordIds.zip(doc.wordCts).filter(p => p._1 >= filterBase).map(kv => kv._2).sum).sum
+    println("filterBase: " + filterBase + ", heldout tokens: " + tokensCount)
     -logLikelihoodBound(documents, model) / tokensCount
   }
 
@@ -565,7 +599,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
   def saveLambda(lambda: RDD[LambdaRow]) {
     val hbaseContext = Utils.getHBaseContext(sc)
-    lambda.hbaseBulkPut(hbaseContext, TableName.valueOf("lambda"),
+    lambda.hbaseBulkPut(hbaseContext, TableName.valueOf(Utils.hbaseTableName),
       (r) => {
         val values = r.vector
         val family = Bytes.toBytes("topics")
@@ -687,6 +721,7 @@ object DistributedOnlineLDA {
       val lastGammaD = gammaDoc.copy
       //                       T * 1               T * V                V * 1                       
       val gammaPreComp = expELogThetaDoc :* (expELogBetaDoc.t * (wordCts :/ phiNorm))
+      //println(expELogThetaDoc.max)
       gammaDoc = gammaPreComp :+ alpha
       expELogThetaDoc = exp(Utils.dirichletExpectation(gammaDoc))
       phiNorm = expELogBetaDoc * expELogThetaDoc + 1e-100
@@ -697,6 +732,7 @@ object DistributedOnlineLDA {
     }
     //                                               T * 1                 1 * V                                          
     val lambdaUpdatePreCompute: BDM[Double] = (expELogThetaDoc) * ((wordCts :/ phiNorm).t)
+    //println(expELogThetaDoc.max)
     //println("=====================================" + lambdaUpdatePreCompute.rows + "=====================================")
 
     //    val data = new BDM(doc.wordCts.size, 1, Array.fill(doc.wordCts.size)(1.0))
@@ -739,16 +775,17 @@ object DistributedOnlineLDA {
     //val updatedLambda2 = new BDM(1, topicNum, updateRow.map(x => (x * (totalDocs.toDouble / mbSize) + eta) * rho))
     //println("max: " + (updatedLambda2.max) + " min: " + updatedLambda2.min)
 
+    //println(updateRow)
     for (i <- 0 to topicNum - 1) {
       val update = (updateRow(i) * (totalDocs.toDouble / mbSize) + eta) * rho
-      //println(i + ": " + update)
+      //println(i + ": " + updateRow(i) * (totalDocs.toDouble / mbSize))
       //println(update / rho)
 
       lambdaRow(i) = (lambdaRow(i) * (1.0 - rho) + update)
-      //      if (lambdaRow(i) > 2.0)
+      //      if (lambdaRow(i) > 1.0)
       //        println((i + 1) + ": " + lambdaRow(i))
     }
-    //println(updatedLambda2.max)
+    //println(lambdaRow.max)
 
     //Utils.arraySum(lambdaRow, updateRow)
     //lambdaRow

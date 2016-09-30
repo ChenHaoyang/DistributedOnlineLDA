@@ -15,11 +15,12 @@ case class OnlineLDAParams(
   totalDocs: Long = 2193062L,
   miniBatchFraction: Double,
   partitions: Int = 100,
-  optimizeDocConcentration: Boolean = true,
+  optimizeDocConcentration: Boolean = false,
   perplexity: Boolean = true,
   initLambda: Boolean = true,
   perplexityFreq: Int = 200,
-  checkPointFreq: Int = 5000
+  checkPointFreq: Int = 5000,
+  filterBase: Int = 0
 ) extends Serializable
 
 case class TopicUpdatesMap(

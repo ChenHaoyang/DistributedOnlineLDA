@@ -32,7 +32,7 @@ class LoadRDDFromHBase(
         .map(pair => {
           val doc = Bytes.toString(pair._2.value()).split(",")
           val id = doc(0).split(":").map { x => x.toLong }
-          val cnt = doc(1).split(":").map { x => x.toLong }
+          val cnt = doc(1).split(":").map { x => x.toDouble }
           Document(id, cnt)
         }).repartition(partitions)
         .persist(StorageLevel.MEMORY_AND_DISK)

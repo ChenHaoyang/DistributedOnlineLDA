@@ -2,6 +2,7 @@ package com.mad.app
 
 import org.apache.spark.{ SparkConf, SparkContext }
 import org.apache.spark.mllib.linalg.{ Vectors }
+import breeze.stats.distributions.{ Gamma }
 import com.mad.models._
 import com.mad.io._
 import com.mad.util._
@@ -25,6 +26,7 @@ object RunLDA {
     val isContinue = args(11).toBoolean
     val initLambda = args(12).toBoolean
     val alpha = args(13).toDouble
+    val filterBase = args(14).toInt
 
     val conf = new SparkConf().setAppName("DistributedLDA")
     conf.registerKryoClasses(Array(
@@ -55,7 +57,7 @@ object RunLDA {
     val lda = new DistributedOnlineLDA(
       OnlineLDAParams(
         vocabSize = totalVcab,
-        alpha = Vectors.dense(alpha),
+        alpha = Vectors.dense(alpha), //Vectors.dense(Gamma(100.0, 1.0 / 100.0).sample(topic_num).toArray.map { x => x * alpha }),
         eta = eta,
         learningRate = learningRate,
         decay = decay,
@@ -66,7 +68,8 @@ object RunLDA {
         partitions = partitions,
         checkPointFreq = checkPointFreq,
         perplexityFreq = perplexityFreq,
-        initLambda = initLambda
+        initLambda = initLambda,
+        filterBase = filterBase
       )
     )
     val rddLoader = new LoadRDDFromHBase(
@@ -84,7 +87,7 @@ object RunLDA {
       }
     }
 
-    lda.saveModel(model)
+    //lda.saveModel(model)
     //Utils.cleanCheckPoint()
 
     sc.stop()
