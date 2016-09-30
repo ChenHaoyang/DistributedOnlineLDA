@@ -17,5 +17,4 @@ trait OnlineLDA {
   def eStep(mb: BowMinibatch, model: LdaModel): MinibatchSStats
 
   def mStep(model: LdaModel, topicUpdatesMap: TopicUpdatesMap, gammaMT: BDM[Double], mbSize: Int): LdaModel
-
 }

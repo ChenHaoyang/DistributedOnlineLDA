@@ -20,7 +20,7 @@ case class OnlineLDAParams(
   initLambda: Boolean = true,
   perplexityFreq: Int = 200,
   checkPointFreq: Int = 5000,
-  filterBase: Int = 0
+  tfRankingMin: Int = 0
 ) extends Serializable
 
 case class TopicUpdatesMap(

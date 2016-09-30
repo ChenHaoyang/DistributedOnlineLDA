@@ -123,7 +123,6 @@ object Utils {
     if (fs.exists(checkPointPath)) {
       fs.delete(checkPointPath, true)
     }
-
     //fs.mkdirs(checkPointPath)
     //    var passFirstFolder = false
     //

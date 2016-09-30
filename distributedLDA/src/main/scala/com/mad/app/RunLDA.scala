@@ -26,7 +26,7 @@ object RunLDA {
     val isContinue = args(11).toBoolean
     val initLambda = args(12).toBoolean
     val alpha = args(13).toDouble
-    val filterBase = args(14).toInt
+    val tfRankingMin = args(14).toInt
 
     val conf = new SparkConf().setAppName("DistributedLDA")
     conf.registerKryoClasses(Array(
@@ -38,21 +38,6 @@ object RunLDA {
     implicit val sc = new SparkContext(
       conf
     )
-    //val cachedRdd = sc.parallelize(1 to 5, 5).map(x => new Counter()).cache
-    //
-    //
-    //// trying to apply modification
-    //
-    //
-    //cachedRdd.foreachPartition { p => p.map(x => x.inc) }
-    //
-    //
-    //// modification worked: all values are ones
-    //
-    //
-    //cachedRdd.collect.foreach(x => println(x.i))
-    //チェックポイントのパスを設定
-    //sc.setCheckpointDir(Utils.checkPointPath)
 
     val lda = new DistributedOnlineLDA(
       OnlineLDAParams(
@@ -69,7 +54,7 @@ object RunLDA {
         checkPointFreq = checkPointFreq,
         perplexityFreq = perplexityFreq,
         initLambda = initLambda,
-        filterBase = filterBase
+        tfRankingMin = tfRankingMin
       )
     )
     val rddLoader = new LoadRDDFromHBase(
@@ -87,7 +72,7 @@ object RunLDA {
       }
     }
 
-    //lda.saveModel(model)
+    lda.saveModel(model)
     //Utils.cleanCheckPoint()
 
     sc.stop()

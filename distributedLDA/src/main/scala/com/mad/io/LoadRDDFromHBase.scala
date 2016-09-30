@@ -36,7 +36,7 @@ class LoadRDDFromHBase(
           Document(id, cnt)
         }).repartition(partitions)
         .persist(StorageLevel.MEMORY_AND_DISK)
-
+        
       rdd
     }
   }

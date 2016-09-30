@@ -241,7 +241,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
    */
   private def initLambda(sc: SparkContext, topicNum: Int) = {
 
-    val topics = sc.parallelize(Array.range(params.filterBase, params.vocabSize - 1), params.partitions)
+    val topics = sc.parallelize(Array.range(params.tfRankingMin, params.vocabSize - 1), params.partitions)
     val hbaseContext = Utils.getHBaseContext(sc)
     val value = 1.0D
     //val value = 1.0 / params.vocabSize.toDouble
@@ -473,7 +473,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
           //else cur_iter += 1
           //System.gc()
         }
-        val wordNum = wordTotalbd.value.filter { x => x >= params.filterBase }.size
+        val wordNum = wordTotalbd.value.filter { x => x >= params.tfRankingMin }.size
         wordTotalbd.unpersist(true)
         wordTotalbd.destroy()
 
@@ -505,9 +505,9 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     model: LdaModel
   ): Double = {
 
-    val filterBase = params.filterBase
-    val tokensCount = documents.map(doc => doc.wordIds.zip(doc.wordCts).filter(p => p._1 >= filterBase).map(kv => kv._2).sum).sum
-    println("filterBase: " + filterBase + ", heldout tokens: " + tokensCount)
+    val tfRankingMin = params.tfRankingMin
+    val tokensCount = documents.map(doc => doc.wordIds.zip(doc.wordCts).filter(p => p._1 >= tfRankingMin).map(kv => kv._2).sum).sum
+    println("filterBase: " + tfRankingMin + ", heldout tokens: " + tokensCount)
     -logLikelihoodBound(documents, model) / tokensCount
   }
 
