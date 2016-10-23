@@ -23,11 +23,17 @@ object Utils {
    *
    */
   def getHBaseContext(implicit sc: SparkContext): HBaseContext = {
+    val hbaseConf = getHBaseConfig
+
+    new HBaseContext(sc, hbaseConf)
+  }
+  
+  def getHBaseConfig(): Configuration = {
     val hbaseConf = HBaseConfiguration.create()
     hbaseConf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/core-site.xml"))
     hbaseConf.addResource(new Path("/usr/local/hadoop-2.5.0-cdh5.3.9/etc/hadoop/hbase-site.xml"))
-
-    new HBaseContext(sc, hbaseConf)
+    
+    hbaseConf
   }
 
   def median[T](s: Seq[T])(implicit n: Fractional[T]) = {

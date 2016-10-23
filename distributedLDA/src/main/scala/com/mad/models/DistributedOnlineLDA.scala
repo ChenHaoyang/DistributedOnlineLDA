@@ -17,7 +17,7 @@ import org.apache.hadoop.fs.{ FileSystem, Path, FSDataOutputStream, FSDataInputS
 import org.apache.hadoop.hbase.spark.HBaseContext
 import org.apache.hadoop.hbase.{ TableName }
 import org.apache.hadoop.hbase.util.Bytes
-import org.apache.hadoop.hbase.client.{ Scan, Put, Get, Result }
+import org.apache.hadoop.hbase.client._
 import org.apache.hadoop.hbase.spark.HBaseRDDFunctions._
 import org.apache.hadoop.fs.Path
 import scala.collection.mutable.{ ArrayBuffer, HashSet }
@@ -27,8 +27,8 @@ import scala.util.control.Breaks._
 
 class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) extends OnlineLDA with Serializable {
 
-  override type BowMinibatch = RDD[Document]
-  override type MinibatchSStats = (TopicUpdatesMap, BDM[Double], Int)
+  override type BowMinibatch = RDD[(Long, Document)]
+  override type MinibatchSStats = (TopicUpdatesMap, BDM[Double], Int, RDD[(Long, BDM[Double])])
   override type LdaModel = ModelSStats[RDD[LambdaRow]]
   override type Minibatch = RDD[String]
 
@@ -55,15 +55,15 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
    *         文書：Array[(単語ID, 単語頻度, 単語のLambda行)]
    *
    */
-  private def createJoinedRDD(mb: BowMinibatch, model: LdaModel): RDD[Array[(Long, Double, Array[Double])]] = {
+  private def createJoinedRDD(mb: BowMinibatch, model: LdaModel): RDD[(Long, Array[(Long, Double, Array[Double])])] = {
     //get the distinct word size of the current mini-batch
     val lambdaRows = model.lambda
     val wordTotalbd = this.wordTotalbd
 
     val wordIdDocIdCount = mb
-      .zipWithIndex()
+      //.zipWithIndex()
       .flatMap {
-        case (docBOW, docId) =>
+        case (docId, docBOW) =>
           docBOW.wordIds.zip(docBOW.wordCts)
             .map { case (wordId, wordCount) => (wordId, (wordCount, docId)) }
       }
@@ -79,10 +79,10 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     val wordIdCountRow = wordIdDocIdCountRow
       .map { case (wordId, ((wordCount, docId), wordRow)) => (docId, List((wordId, wordCount, wordRow))) }
 
-    val removedDocId = wordIdCountRow.reduceByKey((w1, w2) => w1 ::: w2)
-      .map(kv => kv._2.toArray)
+    val docIdRow = wordIdCountRow.reduceByKey((w1, w2) => w1 ::: w2)
+      .map(kv => (kv._1, kv._2.toArray))
 
-    removedDocId
+    docIdRow
   }
 
   /**
@@ -97,20 +97,21 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
    */
   override def eStep(
     mb: BowMinibatch,
-    model: LdaModel
+    model: LdaModel,
+    mStep: Boolean = true
   ): MinibatchSStats = {
 
     val mbSize = mb.count().toInt
-    val removedDocId = createJoinedRDD(mb, model)
+    val docIdRow = createJoinedRDD(mb, model)
     val permanentParamsbd = this.permanentParamsbd
     val alphabd = this.alphabd
     val lambdaSumbd = this.lambdaSumbd
 
     //Perform e-step on documents as a map, then reduce results by wordId.
-    val eStepResult = removedDocId
+    val eStepResult = docIdRow
       .mapPartitions(wIdCtRowItr => {
         val localParams = permanentParamsbd.value
-        wIdCtRowItr.map(wIdCtRow => {
+        wIdCtRowItr.map{case(docId, wIdCtRow) => {
           val currentWordsWeight = wIdCtRow.map(_._3)
           val currentTopicsMatrix = new BDM( //V * T
             currentWordsWeight.size,
@@ -124,28 +125,35 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
           //println("lambdaSum min:" + lambdaSumbd.value.min)
           val ELogBetaDoc = Utils.dirichletExpectation(currentTopicsMatrix, lambdaSumbd.value) //V * T
 
+          (docId,
           DistributedOnlineLDA.oneDocEStep(
             Document(wIdCtRow.map(_._1), wIdCtRow.map(_._2)),
             localParams.numTopics,
             localParams.convergenceThreshold,
             alphabd.value,
             ELogBetaDoc
-          )
-        })
+          ))
+        }}
       }).persist(StorageLevel.MEMORY_AND_DISK)
       .setName("eStepResult")
-    //   D * T
-    val gammaMT = BDM.vertcat(eStepResult.map(x => x.topicProportions.t).collect(): _*)
-
-    val topicUpdates = eStepResult
-      .flatMap(updates => updates.topicUpdates)
-      .reduceByKey(Utils.arraySum)
-
-    val topicUpdatesMap = TopicUpdatesMap(scala.collection.mutable.Map(topicUpdates.collect().toMap.toSeq: _*))
-
-    eStepResult.unpersist()
-
-    (topicUpdatesMap, gammaMT, mbSize)
+    if(mStep){  
+      //   D * T
+      val gammaMT = BDM.vertcat(eStepResult.map(x => x._2.topicProportions.t).collect(): _*)
+  
+      val topicUpdates = eStepResult
+        .flatMap(updates => updates._2.topicUpdates)
+        .reduceByKey(Utils.arraySum)
+  
+      val topicUpdatesMap = TopicUpdatesMap(scala.collection.mutable.Map(topicUpdates.collect().toMap.toSeq: _*))
+  
+      eStepResult.unpersist()
+  
+      (topicUpdatesMap, gammaMT, mbSize, null)
+    }
+    else{
+      val docTopicDist = eStepResult.map(pair => (pair._1, pair._2.topicProportions))
+      (null, null, mbSize, docTopicDist)
+    }
   }
 
   /**
@@ -334,9 +342,9 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     //var cur_iter = 1;
 
     //corpusとheldOutの初期化
-    var corpus = loader.load(sc, params.partitions).get
+    var corpus = loader.loadPair(sc, params.partitions).get
       .setName("corpus")
-    var heldOut = sc.objectFile[Document]("/home/charles/Data/input/heldout")
+    var heldOut = sc.objectFile[(Long,Document)]("/home/charles/Data/input/heldout")
       .repartition(params.partitions)
       .persist(StorageLevel.MEMORY_AND_DISK)
       .setName("heldOut")
@@ -428,7 +436,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
           .persist(StorageLevel.MEMORY_AND_DISK)
           .setName("mini_batch")
 
-        wordTotalbd = sc.broadcast(mb.flatMap(docBOW => docBOW.wordIds).distinct().collect())
+        wordTotalbd = sc.broadcast(mb.flatMap(docBOW => docBOW._2.wordIds).distinct().collect())
         //      wordTotalbd.value.foreach { x => learnedWords.add(x) }
         //      println("learned words count: " + learnedWords.size)
 
@@ -497,6 +505,8 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     }
     bufferedWriter.close()
     bwMedian.close()
+    corpus.unpersist(true)
+    heldOut.unpersist(true)
     curModel
   }
 
@@ -506,7 +516,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
   ): Double = {
 
     val tfRankingMin = params.tfRankingMin
-    val tokensCount = documents.map(doc => doc.wordIds.zip(doc.wordCts).filter(p => p._1 >= tfRankingMin).map(kv => kv._2).sum).sum
+    val tokensCount = documents.map(doc => doc._2.wordIds.zip(doc._2.wordCts).filter(p => p._1 >= tfRankingMin).map(kv => kv._2).sum).sum
     println("filterBase: " + tfRankingMin + ", heldout tokens: " + tokensCount)
     -logLikelihoodBound(documents, model) / tokensCount
   }
@@ -528,7 +538,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
     //calculate L13 + L14 -L22
     val corpusPart =
-      extendedDocRdd.map(wIdCtRow => {
+      extendedDocRdd.map{case(docId, wIdCtRow) => {
         val localAlpha = alphabd.value
         val localParams = permanentParamsbd.value
         var docBound = 0.0D
@@ -566,7 +576,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
         docBound += lgamma(sum(localAlpha)) - lgamma(sum(gammad))
 
         docBound
-      }).sum
+      }}.sum
 
     println("corpus part: " + corpusPart)
     //Bound component for prob(topic-term distributions):
@@ -610,6 +620,97 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
         }
         put
       })
+  }
+  
+  /**
+   * Doc-topic分布の計算関数
+   * 計算結果はHBASEのurl_infoテーブルに保存する
+   * family name: corpus
+   * column name: topic_dist
+   * 
+   * @param iterator 文書RDDの取得Iterator(DocRDDIterator)
+   */
+  def docTopicDistCal(iterator: Iterator[RDD[(Long, Document)]])(implicit sc: SparkContext) {
+    val permanentParamsbd = this.permanentParamsbd
+    var batchRDD = iterator.next()
+    
+    if(curModel == null) curModel = loadModel().get
+
+    while(batchRDD.getOrElse(null) != null){
+      val resultRDD = eStep(batchRDD.get, curModel, false)._4
+                      .map(f => {
+                        val idxBuff = ArrayBuffer[Int]()
+                        val valBuff = ArrayBuffer[Double]()
+                        f._2.foreachPair{(k,v) => {
+                          if(v >= 1.0 / permanentParamsbd.value.numTopics){
+                            idxBuff += k._2
+                            valBuff += v
+                          }
+                        }}
+                        (f._1, (idxBuff.toArray, valBuff.toArray))
+                      })
+      resultRDD.hbaseBulkPut(Utils.getHBaseContext(sc), TableName.valueOf("url_info"), 
+          (kv) => {
+            val put = new Put(Bytes.toBytes(kv._1.toString()))
+            val idx = kv._2._1.mkString(",")
+            val probSum = kv._2._2.sum
+            val prob = kv._2._2.map { x => x / probSum }.mkString(",")
+            val distribution = idx + ":" + prob
+            put.addColumn(Bytes.toBytes("corpus"), Bytes.toBytes("topic_dist"), Bytes.toBytes(distribution))
+            put
+          })
+      batchRDD = iterator.next()
+    }
+  }
+  
+  /**
+   * doc-word分布の計算関数
+   * 計算結果はHBASEのurl_infoテーブルに保存する
+   * family name: corpus
+   * column name: word_dist
+   * 
+   * @param iterator 文書の取得Iterator(OneDocIterator)
+   */
+  def docWordDistCal(iterator: Iterator[(Long, Map[Int, Double])])(implicit sc: SparkContext){
+    if(curModel == null) curModel = loadModel().get
+    val sumOfLambda = sumLambda(curModel.lambda)
+    val vocabSize = curModel.lambda.map { row => row.index }.count()
+    val solBd = sc.broadcast(sumOfLambda)
+    var record = iterator.next
+    val conf = Utils.getHBaseConfig()
+    val conn = ConnectionFactory.createConnection(conf)
+    val table = conn.getBufferedMutator(TableName.valueOf("url_info"))
+    
+    while(record.getOrElse(null) != null){
+      val recordBd = sc.broadcast(record.get)
+      val wordRawWeight = curModel.lambda.map { row => {
+        val weight = row.vector
+        val recordMap = recordBd.value._2
+        val sumOL = solBd.value
+        val wordProb = recordMap.map((kv) => {
+          weight(kv._1) * kv._2 / sumOL(kv._1)
+        }).sum
+        if(wordProb >= 1.0/vocabSize.toDouble)
+          (row.index, wordProb)
+        else
+          (row.index, 0.0d)
+      } }
+      val wordNewWeight = wordRawWeight.filter { x => x._2>0 }.cache()
+      val partitionSum = wordNewWeight.map(kv => kv._2).sum
+      val wordDist = wordNewWeight.map(kv => (kv._1, kv._2 / partitionSum)).collect().unzip
+      val wordIdx = wordDist._1.mkString(",")//キーワードＩＤ
+      val probs = wordDist._2.mkString(",")//キーワードの出現確率
+      val distString = wordIdx + ":" + probs
+      val put = new Put(Bytes.toBytes(recordBd.value._1.toString()))
+      put.addColumn(Bytes.toBytes("corpus"), Bytes.toBytes("word_dist"), Bytes.toBytes(distString))
+      table.mutate(put)
+      record = iterator.next
+      recordBd.unpersist(true)
+      wordNewWeight.unpersist(true)
+    }
+    
+    table.close()
+    conn.close()
   }
 
   /**
@@ -688,9 +789,10 @@ object DistributedOnlineLDA {
   /**
    * Perform the E-Step on one document (to be performed in parallel via a map)
    *
-   * @param doc document from corpus.
-   * @param model the current LdaModel
-   * @param gamma the corresponding gamma matrix(T * 1)
+   * @param doc document from mini batch.
+   * @param numTopics number of topics
+   * @param convergenceThreshold 
+   * @param alpha 
    * @param ELogBetaDoc ELogBeta matrix of the current document
    * @return Sufficient statistics for this document.
    */
@@ -730,6 +832,8 @@ object DistributedOnlineLDA {
 
       iter += 1
     }
+    
+    
     //                                               T * 1                 1 * V                                          
     val lambdaUpdatePreCompute: BDM[Double] = (expELogThetaDoc) * ((wordCts :/ phiNorm).t)
     //println(expELogThetaDoc.max)
@@ -757,7 +861,11 @@ object DistributedOnlineLDA {
    *
    * @param lambdaRow row from overall topic matrix
    * @param updateRow row from minibatch topic matrix
+   * @param totalDocs
+   * @param eta
+   * @param rho 学習率
    * @param mbSize number of documents in the minibatch
+   * @param topicNum 
    * @return merged row.
    */
   private def oneWordMStep(
