@@ -6,7 +6,7 @@ import breeze.linalg.{ DenseMatrix => BDM, DenseVector => BDV, all, normalize, s
 import breeze.numerics._
 import breeze.stats.distributions.{ Gamma, RandBasis }
 import breeze.stats.mean
-import com.mad.util.Utils
+import com.mad.util.{Utils, Constants}
 import com.mad.io._
 import org.apache.spark.SparkContext
 import org.apache.spark.storage.{ StorageLevel }
@@ -254,7 +254,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     val value = 1.0D
     //val value = 1.0 / params.vocabSize.toDouble
     //initialize lambda matrix in HBase
-    topics.hbaseBulkPut(hbaseContext, TableName.valueOf(Utils.hbaseTableName),
+    topics.hbaseBulkPut(hbaseContext, TableName.valueOf(Constants.hbaseTableName),
       (wordID) => {
         //        val randBasis = new RandBasis(new org.apache.commons.math3.random.MersenneTwister(
         //          new Random(new Random().nextLong()).nextLong()
@@ -278,7 +278,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     val scan = new Scan()
       .addFamily(Bytes.toBytes("topics"))
       .setCaching(100)
-    val matrixRows = hbaseContext.hbaseRDD(TableName.valueOf(Utils.hbaseTableName), scan)
+    val matrixRows = hbaseContext.hbaseRDD(TableName.valueOf(Constants.hbaseTableName), scan)
       .map(pair => {
         val localParams = permanentParamsbd.value
         val arrayBuf = new ArrayBuffer[Double]()
@@ -609,7 +609,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
   def saveLambda(lambda: RDD[LambdaRow]) {
     val hbaseContext = Utils.getHBaseContext(sc)
-    lambda.hbaseBulkPut(hbaseContext, TableName.valueOf(Utils.hbaseTableName),
+    lambda.hbaseBulkPut(hbaseContext, TableName.valueOf(Constants.hbaseTableName),
       (r) => {
         val values = r.vector
         val family = Bytes.toBytes("topics")
@@ -641,22 +641,24 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
                       .map(f => {
                         val idxBuff = ArrayBuffer[Int]()
                         val valBuff = ArrayBuffer[Double]()
+                        val gammaSum = f._2.sum
                         f._2.foreachPair{(k,v) => {
-                          if(v >= 1.0 / permanentParamsbd.value.numTopics){
-                            idxBuff += k._2
-                            valBuff += v
+                          val prob = v / gammaSum//gammaから確率計算
+                          if(prob >= (1.0 / permanentParamsbd.value.numTopics.toDouble)){
+                            idxBuff += k._2//有効なトピックのindex(zero-based)
+                            valBuff += prob
                           }
                         }}
                         (f._1, (idxBuff.toArray, valBuff.toArray))
                       })
-      resultRDD.hbaseBulkPut(Utils.getHBaseContext(sc), TableName.valueOf("url_info"), 
+      resultRDD.hbaseBulkPut(Utils.getHBaseContext(sc), TableName.valueOf(Constants.corpusTableName), 
           (kv) => {
             val put = new Put(Bytes.toBytes(kv._1.toString()))
             val idx = kv._2._1.mkString(",")
             val probSum = kv._2._2.sum
-            val prob = kv._2._2.map { x => x / probSum }.mkString(",")
+            val prob = kv._2._2.map { x => x / probSum }.mkString(",")//スパース化したので、確率標準化が必要
             val distribution = idx + ":" + prob
-            put.addColumn(Bytes.toBytes("corpus"), Bytes.toBytes("topic_dist"), Bytes.toBytes(distribution))
+            put.addColumn(Bytes.toBytes(Constants.corpusFamilyName), Bytes.toBytes(Constants.DocTopicDistColName), Bytes.toBytes(distribution))
             put
           })
       batchRDD = iterator.next()
@@ -679,7 +681,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     var record = iterator.next
     val conf = Utils.getHBaseConfig()
     val conn = ConnectionFactory.createConnection(conf)
-    val table = conn.getBufferedMutator(TableName.valueOf("url_info"))
+    val table = conn.getBufferedMutator(TableName.valueOf(Constants.corpusTableName))
     
     while(record.getOrElse(null) != null){
       val recordBd = sc.broadcast(record.get)
@@ -702,13 +704,13 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
       val probs = wordDist._2.mkString(",")//キーワードの出現確率
       val distString = wordIdx + ":" + probs
       val put = new Put(Bytes.toBytes(recordBd.value._1.toString()))
-      put.addColumn(Bytes.toBytes("corpus"), Bytes.toBytes("word_dist"), Bytes.toBytes(distString))
+      put.addColumn(Bytes.toBytes(Constants.corpusFamilyName), Bytes.toBytes(Constants.DocWordDistColName), Bytes.toBytes(distString))
       table.mutate(put)
       record = iterator.next
       recordBd.unpersist(true)
       wordNewWeight.unpersist(true)
     }
-    
+    solBd.unpersist(true)
     table.close()
     conn.close()
   }
@@ -741,7 +743,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
     //Utils.cleanLocalDirectory()
     val fs = FileSystem.get(sc.hadoopConfiguration)
     //val fo = new FileOutputStream(Utils.localPath)
-    val oos = new ObjectOutputStream(new FSDataOutputStream(fs.create(new Path(Utils.savePath))))
+    val oos = new ObjectOutputStream(new FSDataOutputStream(fs.create(new Path(Constants.savePath))))
     oos.writeObject(model)
     //fo.close()
     oos.close()
@@ -753,7 +755,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
 
   private def loadCheckPoint(sc: SparkContext): LdaModel = {
     val fs = FileSystem.get(sc.hadoopConfiguration)
-    val ois = new ObjectInputStream(new FSDataInputStream(fs.open(new Path(Utils.savePath))))
+    val ois = new ObjectInputStream(new FSDataInputStream(fs.open(new Path(Constants.savePath))))
     val model = ois.readObject()
       .asInstanceOf[LdaModel]
 

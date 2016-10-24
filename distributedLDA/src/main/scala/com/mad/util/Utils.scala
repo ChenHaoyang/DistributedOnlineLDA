@@ -16,9 +16,6 @@ import org.apache.commons.io.FileUtils
 
 object Utils {
 
-  val checkPointPath = "/home/charles/Data/output/checkpoint"
-  val savePath = "/home/charles/Data/output/model/LDA.data"
-  val hbaseTableName = "lambda"
   /**
    *
    */
@@ -125,7 +122,7 @@ object Utils {
 
     System.setProperty("HADOOP_USER_NAME", "hdfs")
     val fs = FileSystem.get(conf)
-    val checkPointPath = new Path(Utils.checkPointPath)
+    val checkPointPath = new Path(Constants.checkPointPath)
     if (fs.exists(checkPointPath)) {
       fs.delete(checkPointPath, true)
     }
@@ -155,7 +152,7 @@ object Utils {
   }
 
   def cleanLocalDirectory() = {
-    val file = new File(Utils.savePath)
+    val file = new File(Constants.savePath)
     file.deleteOnExit()
   }
 }
