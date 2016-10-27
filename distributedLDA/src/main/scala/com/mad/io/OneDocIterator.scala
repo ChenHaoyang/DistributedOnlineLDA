@@ -7,7 +7,7 @@ import scala.collection.immutable.{Map}
 import scala.util.Try
 import com.mad.util.Utils
 
-class OneRecordIterator(
+class OneDocIterator(
     tableName: String,
     familyName: String,
     colName: String

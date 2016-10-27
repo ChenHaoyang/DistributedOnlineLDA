@@ -727,7 +727,7 @@ class DistributedOnlineLDA(params: OnlineLDAParams)(implicit sc: SparkContext) e
    * Load a saved topic model from save location.
    * Uses Java object deserialization.
    */
-  def loadModel()(implicit sc: SparkContext): Try[LdaModel] = {
+  private def loadModel()(implicit sc: SparkContext): Try[LdaModel] = {
     Try {
       loadCheckPoint(sc)
     }

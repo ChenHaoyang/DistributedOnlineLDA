@@ -6,6 +6,7 @@ object Constants {
   val hbaseTableName = "lambda"
   val corpusTableName = "url_info"
   val corpusFamilyName = "corpus"
+  val corpusColName = "doc"
   val DocTopicDistColName = "topic_dist"
   val DocWordDistColName = "word_dist"
 }
